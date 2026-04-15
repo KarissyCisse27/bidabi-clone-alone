@@ -5,7 +5,7 @@ import os
 from aiohttp import ClientSession, ClientTimeout
 
 API_URL = "https://world.openfoodfacts.org/cgi/search.pl"
-HEADERS = {"User-Agent": "MyAwesomeApp/1.0"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 OUTPUT_DIR = "data"
 
@@ -14,8 +14,8 @@ TARGET_COUNT = 180
 PAGE_SIZE = 100
 MAX_PAGES = 50
 
-MAX_CONCURRENT_REQUESTS = 10
-MAX_CONCURRENT_IMAGES = 10
+MAX_CONCURRENT_REQUESTS = 5
+MAX_CONCURRENT_IMAGES = 5
 
 
 # -------------------------
@@ -62,19 +62,35 @@ async def fetch_page(session, category, page, page_size, sem):
     }
 
     async with sem:
-        try:
-            async with session.get(API_URL, params=params) as resp:
-                data = await resp.json()
-                return data.get("products", [])
-        except Exception as e:
-            print(f"⚠ Erreur API page {page} :", e)
-            return []
+        retries = 3
+        for attempt in range(retries):
+            try:
+                async with session.get(API_URL, params=params) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("products", [])
+                    elif resp.status == 503:
+                        wait_time = 5 * (attempt + 1)
+                        print(f"⚠ Serveur indisponible (503), attente {wait_time}s avant retry...")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        print(f"⚠ Erreur HTTP {resp.status}")
+                        return []
+            except asyncio.TimeoutError:
+                print(f"⚠ Timeout page {page}, retry {attempt + 1}/{retries}")
+                await asyncio.sleep(3)
+            except Exception as e:
+                print(f"⚠ Erreur API page {page} :", e)
+                if attempt < retries - 1:
+                    await asyncio.sleep(2)
+        
+        return []
 
 
 # -------------------------
 # Async image download
 # -------------------------
-async def download_image(session, url, image_id, sem, folder="data/images/sugar"):
+async def download_image(session, url, image_id, sem, folder=f"data/raw/images/{CATEGORY}"):
     if not url:
         return
 
@@ -134,6 +150,7 @@ async def scrape(category, target_count, page_size, max_pages):
                         break
 
             page += 1
+            await asyncio.sleep(1)  # Délai entre les pages
 
         await asyncio.gather(*image_tasks)
         return valid_products
@@ -154,7 +171,7 @@ def save_to_csv(filename, rows):
 # -------------------------
 def main():
     products = asyncio.run(scrape(CATEGORY, TARGET_COUNT, PAGE_SIZE, MAX_PAGES))
-    output_file = f"{OUTPUT_DIR}/metadata_{CATEGORY}_{TARGET_COUNT}.csv"
+    output_file = f"data/raw/metadata_{CATEGORY}_{TARGET_COUNT}.csv"
     save_to_csv(output_file, products)
     print(f"✔ Fichier {output_file} créé. Produits valides collectés : {len(products)}")
 
