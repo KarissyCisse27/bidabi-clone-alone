@@ -50,16 +50,31 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-
+# création du dossier visualisations s'il n'existe pas
+os.makedirs("visualisations", exist_ok=True)
 set_seed(42)
 
 # --- Constantes globales ---
 H = 256
 W = 256
 BATCH_SIZE = 32
-DATA_DIR = "./Flipkart/Sorted/"
+DATA_DIR = os.environ.get("DATA_DIR", "./data/")
 NUM_EPOCHS = 20
 PATIENCE = 3
+TRAIN_DIR = os.path.join(DATA_DIR, "train")
+VAL_DIR = os.path.join(DATA_DIR, "val")
+TEST_DIR = os.path.join(DATA_DIR, "test")
+
+if os.path.isdir(TRAIN_DIR) and os.path.isdir(VAL_DIR) and os.path.isdir(TEST_DIR):
+    use_split_dirs = True
+elif os.path.isdir(DATA_DIR):
+    use_split_dirs = False
+else:
+    raise FileNotFoundError(
+        f"DATA_DIR introuvable : {DATA_DIR}\n"
+        "Mettez à jour DATA_DIR dans src/classificator.py "
+        "ou lancez le script avec DATA_DIR=/chemin/vers/les/images python src/classificator.py"
+    )
 
 # --- Transformations ---
 train_transform = transforms.Compose([
@@ -95,28 +110,56 @@ test_transform = transforms.Compose([
 ])
 
 # --- Chargement du dataset ---
-dataset = datasets.ImageFolder(
-    root=DATA_DIR,
-    transform=train_transform,
-    is_valid_file=lambda p: p.lower().endswith((".jpg", ".jpeg", ".png"))
-)
+if use_split_dirs:
+    train_dataset = datasets.ImageFolder(
+        root=TRAIN_DIR,
+        transform=train_transform,
+        is_valid_file=lambda p: p.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
+    val_dataset = datasets.ImageFolder(
+        root=VAL_DIR,
+        transform=test_transform,
+        is_valid_file=lambda p: p.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
+    test_dataset = datasets.ImageFolder(
+        root=TEST_DIR,
+        transform=test_transform,
+        is_valid_file=lambda p: p.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
 
-NUM_CLASSES = len(dataset.classes)
-print("Catégories détectées :", dataset.classes)
+    NUM_CLASSES = len(train_dataset.classes)
+    print("Catégories détectées :", train_dataset.classes)
+
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+else:
+    dataset = datasets.ImageFolder(
+        root=DATA_DIR,
+        transform=train_transform,
+        is_valid_file=lambda p: p.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
+
+    NUM_CLASSES = len(dataset.classes)
+    print("Catégories détectées :", dataset.classes)
+
+    total_len = len(dataset)
+    train_size = int(0.6 * total_len)
+    val_size = int(0.2 * total_len)
+    test_size = total_len - train_size - val_size
+
+    train_dataset, val_dataset, test_dataset = random_split(
+        dataset, [train_size, val_size, test_size]
+    )
+
+    val_dataset.dataset.transform = test_transform
+    test_dataset.dataset.transform = test_transform
+
+    print(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+
+CLASSES = train_dataset.classes
+
+
 
 # --- Split train/val/test ---
-total_len = len(dataset)
-train_size = int(0.6 * total_len)
-val_size = int(0.2 * total_len)
-test_size = total_len - train_size - val_size
-
-train_dataset, val_dataset, test_dataset = random_split(
-    dataset, [train_size, val_size, test_size]
-)
-
-val_dataset.dataset.transform = test_transform
-test_dataset.dataset.transform = test_transform
-
 train_loader = DataLoader(
     train_dataset, batch_size=BATCH_SIZE, shuffle=True
 )
@@ -127,8 +170,7 @@ test_loader = DataLoader(
     test_dataset, batch_size=BATCH_SIZE, shuffle=False
 )
 
-print(f"Train: {len(train_dataset)}, "
-      f"Val: {len(val_dataset)}, Test: {len(test_dataset)}")
+
 
 
 # --- Modèle ResNet18 ---
@@ -318,6 +360,7 @@ plt.xlabel("Epoch")
 plt.ylabel("Loss")
 plt.title("Training & Validation Loss (ResNet18 full FT + MixUp)")
 plt.legend()
+plt.savefig("visualisations/training_loss.png")
 plt.show()
 
 plt.figure(figsize=(8, 5))
@@ -326,6 +369,7 @@ plt.xlabel("Epoch")
 plt.ylabel("Accuracy")
 plt.title("Validation Accuracy (ResNet18 full FT + MixUp)")
 plt.legend()
+plt.savefig("visualisations/validation_accuracy.png")
 plt.show()
 
 
@@ -385,8 +429,7 @@ def evaluate_model(model, loader):
 
 all_preds, all_labels, all_probs = evaluate_model(model, test_loader)
 
-# --- Rapport de classification ---
-print(classification_report(all_labels, all_preds, target_names=dataset.classes))
+
 
 
 # --- Confusion Matrix ---
@@ -413,11 +456,12 @@ def plot_confusion_matrix(cm, classes):
     plt.xlabel("Predicted")
     plt.ylabel("True")
     plt.title("Confusion Matrix (ResNet18 full FT + MixUp)")
+    plt.savefig("visualisations/confusion_matrix.png")
     plt.show()
 
 
 cm = confusion_matrix(all_labels, all_preds)
-plot_confusion_matrix(cm, dataset.classes)
+plot_confusion_matrix(cm, CLASSES)
 
 
 # --- Per-class accuracy ---
@@ -465,10 +509,11 @@ per_class_acc = compute_per_class_accuracy(
 )
 
 plt.figure(figsize=(10, 5))
-plt.bar(dataset.classes, per_class_acc)
+plt.bar(CLASSES, per_class_acc)
 plt.ylabel("Accuracy")
 plt.title("Per-class Accuracy (ResNet18 full FT + MixUp)")
 plt.xticks(rotation=45)
+plt.savefig("visualisations/per_class_accuracy.png")
 plt.show()
 
 
@@ -499,11 +544,11 @@ def plot_roc_curves(labels, probs, classes):
     plt.ylabel("True Positive Rate")
     plt.title("ROC Curves (ResNet18 full FT + MixUp)")
     plt.legend()
+    plt.savefig("visualisations/roc_curves.png")
     plt.show()
 
 
-plot_roc_curves(all_labels, all_probs, dataset.classes)
-
+plot_roc_curves(all_labels, all_probs, CLASSES)
 
 # --- Hardest samples ---
 def compute_hardest_samples(model, loader, classes, top_k=12):
@@ -571,10 +616,11 @@ def compute_hardest_samples(model, loader, classes, top_k=12):
         plt.axis("off")
 
     plt.suptitle("Top Hardest Samples (Highest Loss)")
+    plt.savefig("visualisations/hardest_samples.png")
     plt.show()
 
 
-compute_hardest_samples(model, test_loader, dataset.classes)
+compute_hardest_samples(model, test_loader, CLASSES)
 
 
 # --- Embeddings t-SNE & UMAP ---
@@ -629,13 +675,15 @@ tsne = TSNE(n_components=2, perplexity=30, learning_rate=200)
 tsne_emb = tsne.fit_transform(embeddings)
 
 plt.figure(figsize=(8, 6))
-for i, cls in enumerate(dataset.classes):
+for i, cls in enumerate(CLASSES):
     idx = labels_list == i
     plt.scatter(tsne_emb[idx, 0], tsne_emb[idx, 1], label=cls, alpha=0.6)
 
 plt.legend()
 plt.title("t-SNE Embedding Visualization")
+plt.savefig("visualisations/tsne_embedding.png")
 plt.show()
+
 
 
 # --- UMAP ---
@@ -644,10 +692,11 @@ if umap_available:
     umap_emb = reducer.fit_transform(embeddings)
 
     plt.figure(figsize=(8, 6))
-    for i, cls in enumerate(dataset.classes):
+    for i, cls in enumerate(CLASSES):
         idx = labels_list == i
         plt.scatter(umap_emb[idx, 0], umap_emb[idx, 1], label=cls, alpha=0.6)
 
     plt.legend()
     plt.title("UMAP Embedding Visualization")
+    plt.savefig("visualisations/umap_embedding.png")
     plt.show()
